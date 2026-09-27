@@ -728,11 +728,18 @@ async function openReview(owner) {
       element("span", row.reason || "未标注切点原因", summary, "h3lv-reason");
       if (needsReplacement(row)) element("span", "待重生成", summary, "h3lv-chip risk");
       else if (row.job?.status) element("span", row.job.status, summary, "h3lv-chip neutral");
-      card.ontoggle = () => { if (card.open) updateSelected(row.index); };
-      const inner = element("div", undefined, card, "h3lv-card-body");
+      card.ontoggle = () => {
+        if (!card.open) return;
+        details.forEach(other => { if (other !== card) other.open = false; });
+        updateSelected(row.index);
+      };
+      const body = element("div", undefined, card, "h3lv-card-body");
+      const inner = element("div", undefined, body, "h3lv-segment-editor");
+      let resultPanel;
       if (row.video_preview?.filename) {
-        inner.classList.add("has-preview");
-        const preview = element("figure", undefined, inner, "h3lv-segment-preview");
+        body.classList.add("has-preview");
+        resultPanel = element("div", undefined, body, "h3lv-segment-result");
+        const preview = element("figure", undefined, resultPanel, "h3lv-segment-preview");
         element("figcaption", "当前分段结果", preview);
         const video = element("video", undefined, preview);
         video.controls = true;
@@ -944,10 +951,11 @@ async function openReview(owner) {
         refs: rowRefs, renderRefs: renderReferences, duration, time,
         generationFrames, editFrames, audio:segmentAudio});
       details.push(card);
+      const resultControls = element("div", undefined, resultPanel || inner, "h3lv-result-controls");
       if (row.job || needsReplacement(row)) {
         element("p", `生成状态：${row.job?.status || "待生成"}${needsReplacement(row) ? ` · ${row.regeneration_reason || "需要重新生成"}` : ""}`+
-          `${row.job?.error ? ` · ${row.job.error}` : ""}`, inner, "h3lv-job");
-        actionButton(inner, "重新生成本段", async () => {
+          `${row.job?.error ? ` · ${row.job.error}` : ""}`, resultControls, "h3lv-job");
+        actionButton(resultControls, "重新生成本段", async () => {
           if (dirty) throw new Error("请先保存并确认当前修改。");
           if (!plan.approved) throw new Error("请先保存并确认分段方案。");
           if (!await confirmDialog({
@@ -961,7 +969,7 @@ async function openReview(owner) {
         }, "segment-run");
       }
       if (row.takes?.length) {
-        actionButton(inner, `恢复上一版（${row.takes.length}）`, async () => {
+        actionButton(resultControls, `恢复上一版（${row.takes.length}）`, async () => {
           if (!await confirmDialog({
             title: `恢复第 ${row.index+1} 段上一版？`,
             message: "恢复后不会重跑其他片段，但需要重新合成最终视频。",
@@ -971,7 +979,7 @@ async function openReview(owner) {
         });
       }
       if (row.failed_attempts?.length) {
-        element("p", `保留了 ${row.failed_attempts.length} 次失败的新版本记录；当前仍采用上一个成功版本。`, inner, "h3lv-job");
+        element("p", `保留了 ${row.failed_attempts.length} 次失败的新版本记录；当前仍采用上一个成功版本。`, resultControls, "h3lv-job");
       }
     });
   }

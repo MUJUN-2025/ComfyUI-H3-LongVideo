@@ -114,10 +114,11 @@
 .h3lv-chip.risk { color: #ff9c9c; background: rgba(219,70,70,.18); }
 .h3lv-chip.neutral { color: #bac5d3; background: rgba(147,161,180,.15); }
 .h3lv-card-body { position: relative; padding: 12px 14px 15px; }
-.h3lv-card-body.has-preview { min-height: 205px; padding-right: 350px; }
-.h3lv-card-body::after { display: block; clear: both; content: ""; }
+.h3lv-card-body.has-preview { display: grid; grid-template-columns: minmax(0, 1fr) 316px; gap: 20px; align-items: start; }
+.h3lv-segment-editor, .h3lv-segment-result { min-width: 0; }
+.h3lv-result-controls { overflow-wrap: anywhere; }
 .h3lv-segment-preview {
-  position: absolute; top: 12px; right: 14px; width: 316px; margin: 0;
+  width: 100%; margin: 0;
   border: 1px solid #414c5b; border-radius: 7px; overflow: hidden; background: #11151c;
 }
 .h3lv-segment-preview figcaption { padding: 6px 9px; color: #b7c5d7; font-size: 12px; }
@@ -216,8 +217,9 @@
   .h3lv-reason { grid-column: 1 / -1; grid-row: 2; justify-self: start; text-align: left; }
   .h3lv-chip { grid-column: 2; grid-row: 1; }
   .h3lv-selected-bar audio { width: 100%; }
-  .h3lv-card-body.has-preview { min-height: 0; padding-right: 14px; }
-  .h3lv-segment-preview { position: static; width: 100%; margin: 0 0 12px; }
+  .h3lv-card-body.has-preview { display: flex; flex-direction: column; gap: 12px; }
+  .h3lv-segment-editor, .h3lv-segment-result { width: 100%; }
+  .h3lv-segment-result { order: -1; }
   .h3lv-project-manager-panel { width: 100vw; max-height: 100vh; border-radius: 0; }
   .h3lv-project-manager-item { grid-template-columns: 22px 1fr auto; }
   .h3lv-project-manager-storage { grid-column: 2 / -1; justify-items: start; }
