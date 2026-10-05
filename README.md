@@ -115,6 +115,21 @@ ComfyUI/output/H3LongVideo/projects
 
 唱歌和口播的镜头规划来自本地导演规则；`H3LVPromptExpand` 按当前段素材、导演简报和所选 `vision`／`text`／`manual` 模式生成提示词。模型服务设置保存在本机用户目录，密钥不进入工作流或项目快照。扩写结果可在分段预览中检查，必要时逐段编辑。
 
+### API 兼容与超时设置
+
+“API 设置与模型选择”使用 **OpenAI 兼容 Chat Completions**：填写基础地址（通常以 `/v1` 结尾）、对应 API Key 和服务实际支持的模型名称。插件在地址后追加 `/chat/completions`；模型列表使用 `/models`，不提供模型列表的服务仍可手动填写模型。多图扩写还要求模型支持 `image_url` 输入，纯文本模型可用 `text` 模式。
+
+- **等待超时**：默认 300 秒，可设为 10–3600 秒。这是连接／读取数据的等待超时，不是整个生成任务的总时限。旧配置无需重填密钥，新选项自动使用默认值。
+- **响应方式**：默认普通 JSON；服务支持 `stream` 时可选流式 SSE。插件汇总正文后再校验并保存；不会把思考内容当作提示词，也不会保存中断的流式半成品。服务返回普通 JSON 时仍可解析。
+- **思考参数**：默认只自动适配已知 Qwen 混合思考型号及接口：百炼／QwenCloud／OFOX 使用对应型号的原生参数，OpenRouter 使用网关参数。裸名称与 `qwen/` 名称均可识别，但不改写模型名称。未知服务、其他型号及仅思考模型不注入猜测字段；可选“遵循服务默认”停用自动适配。
+- **额外请求参数**：高级设置接受 JSON 对象，按服务文档填写，覆盖自动参数；`null` 表示移除字段。例如未知中转服务明确支持时可填 `{"enable_thinking":false}`；采用新 Token 参数的服务可填 `{"max_tokens":null,"max_completion_tokens":8192}`。不能覆盖模型、消息素材、`stream`、地址或密钥。参数仅保存在本机；影响生成内容的参数变化会更新扩写缓存标识，单独修改超时或响应方式不清除缓存。
+
+API 失败会区分超时、DNS／连接／TLS、HTTP 状态、服务端错误与 JSON／SSE 格式错误，并显示等待设置和请求耗时；不输出密钥或原始请求素材。**不自动重试**：客户端超时不代表服务端没执行或没计费，确认服务状态后再手动重试。
+
+已知思考参数依据：[百炼混合思考说明](https://www.alibabacloud.com/help/zh/model-studio/deep-thinking)、[Qwen-Omni 独立参数](https://www.alibabacloud.com/help/en/model-studio/qwen-omni)、[OpenRouter reasoning 参数](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)。新型号或不同中转服务请优先核对其文档，必要时使用额外请求参数，不依赖名称猜测。
+
+此兼容层面向 Bearer API Key 鉴权、标准 `/chat/completions` 路径的服务，不代表所有模型都支持多图、思考关闭或所有额外参数；原生 Anthropic／Gemini、仅 Responses 的接口，以及采用部署路由和其他鉴权方式的服务不在此接口范围。更新后重启 ComfyUI 并刷新浏览器，原工作流连线和采样设置无需更改。
+
 自行搭建工作流时，将 `segment_material` 接入插件的“H3 长视频 · 分镜提示词生成器”，再把生成结果接入 H3 提示词输入。若使用外部工具写提示词，可在分段界面填写“手写提示词”，将长视频节点末尾的 `segment_prompt` 直接接入 H3 `prompt`；该接口不会改写、校验或回退。H3 的 `prompt` 同时只能选择一条连线。将节点末尾的 `fps` 接入 VHS Video Combine 的 `frame_rate`，使分段输出始终按 24fps 编码。顺序生成工作流需保留一个 `H3LVUnified` 节点和一个 VHS Video Combine 输出节点。
 
 ## 使用建议
@@ -129,7 +144,7 @@ ComfyUI/output/H3LongVideo/projects
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py" -v
-node --test tests/test_timeline.mjs tests/test_material_mentions.mjs
+node --test tests/test_timeline.mjs tests/test_material_mentions.mjs tests/test_expansion_settings.mjs
 ```
 
 测试范围及生成样本记录见 [验证记录](VERIFICATION.md)。

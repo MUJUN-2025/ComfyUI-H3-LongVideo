@@ -129,7 +129,8 @@ def register_routes():
     async def expansion_save_settings(request):
         from .expansion import save_settings
         payload = await request.json()
-        return web.json_response(save_settings(payload['base_url'], payload.get('api_key')))
+        options = {key: payload[key] for key in ('timeout_seconds', 'response_mode', 'thinking_mode', 'extra_body') if key in payload}
+        return web.json_response(save_settings(payload['base_url'], payload.get('api_key'), **options))
 
     @routes.get('/h3lv/expansion/models')
     @endpoint

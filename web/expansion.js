@@ -41,8 +41,31 @@ async function settingsDialog(node) {
   const keyLabel = element("label", main, "API Key");
   const key = element("input", keyLabel); key.type = "password"; key.autocomplete = "off";
   key.placeholder = profile.configured ? "已配置，留空保留当前密钥" : "粘贴密钥";
+  const timeoutLabel = element("label", main, "连接／读取等待超时（秒）");
+  const timeout = element("input", timeoutLabel); timeout.type = "number"; timeout.min = "10"; timeout.max = "3600";
+  timeout.value = profile.timeout_seconds ?? 300;
+  const responseLabel = element("label", main, "响应方式");
+  const responseMode = element("select", responseLabel);
+  element("option", responseMode, "普通 JSON（兼容优先）").value = "json";
+  element("option", responseMode, "流式 SSE（服务需支持 stream）").value = "stream";
+  responseMode.value = profile.response_mode || "json";
+  const thinkingLabel = element("label", main, "思考参数");
+  const thinking = element("select", thinkingLabel);
+  element("option", thinking, "自动适配已知接口／型号，未知服务不注入").value = "auto";
+  element("option", thinking, "遵循服务默认（不自动注入思考参数）").value = "provider_default";
+  thinking.value = profile.thinking_mode || "auto";
+  const advanced = element("details", main);
+  element("summary", advanced, "额外请求参数（高级，JSON 对象）");
+  element("p", advanced, "按服务文档填写，例如 {\"enable_thinking\":false}。覆盖自动参数；null 可移除字段。不能改写模型、素材、stream 或密钥。仅保存在本机。");
+  const extra = element("textarea", advanced); extra.rows = 5; extra.value = JSON.stringify(profile.extra_body || {}, null, 2);
+  extra.setAttribute("aria-label", "额外请求参数");
+  element("p", main, "不自动重试：超时请求可能已产生费用。支持标准 /chat/completions 的服务；多图扩写还需模型支持图片输入。");
   button(main, "保存本机配置", status, async () => {
-    await request("/h3lv/expansion/settings", {base_url:address.value, api_key:key.value});
+    let extraBody;
+    try {extraBody = JSON.parse(extra.value);} catch {throw new Error("额外请求参数不是有效 JSON，请修正或填写 {}。");}
+    await request("/h3lv/expansion/settings", {base_url:address.value, api_key:key.value,
+      timeout_seconds:Number(timeout.value), response_mode:responseMode.value,
+      thinking_mode:thinking.value, extra_body:extraBody});
     key.value = ""; status.textContent = "配置已保存。";
   });
   const search = element("input", main); search.placeholder = "筛选模型名称，例如 qwen";

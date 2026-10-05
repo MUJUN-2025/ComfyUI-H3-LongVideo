@@ -1,11 +1,16 @@
 """OpenAI-compatible expansion. Secrets never enter node widgets or task snapshots."""
 import base64
 import hashlib
+from http.client import HTTPException
 import io
 import json
 from pathlib import Path
 import re
+import socket
+import ssl
 import threading
+import time
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
@@ -27,6 +32,7 @@ The visual_type values have strict meanings. performance means a visible perform
 Keep the result to one continuous shot. Write [Shot 1] exactly once, immediately after detailed_description:, and never write a shot label in summary or any other section. Keep every frame free of added subtitles, captions, lyrics, watermarks and graphic overlays. If writing, signage, posters, labels or interface text is visible in a reference picture, do not quote, transcribe, translate, paraphrase or describe its wording; describe it only as unreadable background signage or text. The workflow restores the original audio after generation, so do not request extra ambience, sound effects, dialogue audio or music. Return only the six-section prompt, with no Markdown fence.'''
 GUARD += '\nThe final sentence of detailed_description must explicitly state: Every frame stays free of added subtitles, captions, lyrics, watermarks and graphic overlays. Do not transcribe writing visible in the reference backgrounds. Set BOTH sound sections to the literal N/A; do not invent ambient sounds, audio recording qualities, reverberation or additional music. Use literal field labels with ASCII colons, exactly as this template:\n' + '\n\n'.join(name + (':\nN/A' if name in ('overall_soundscape', 'non_diegetic_music') else ':\n...') for name in HEADINGS)
 EXPAND_LOCK = threading.Lock()
+API_DEFAULTS = {'timeout_seconds': 300, 'response_mode': 'json', 'thinking_mode': 'auto', 'extra_body': {}}
 
 
 def model_material_note(note, count):
@@ -52,11 +58,32 @@ def settings():
 
 def public_settings():
     c = settings()
-    return {'base_url': c.get('base_url', 'https://api.ofox.io/v1'), 'configured': bool(c.get('api_key'))}
+    return {'base_url': c.get('base_url', 'https://api.ofox.io/v1'), 'configured': bool(c.get('api_key')),
+            **api_options(c)}
 
 
-def save_settings(base_url, api_key=None):
-    from urllib.parse import urlsplit
+def api_options(config):
+    options = {name: config.get(name, default) for name, default in API_DEFAULTS.items()}
+    timeout = options['timeout_seconds']
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 10 <= timeout <= 3600:
+        raise ValueError('API 等待超时必须是 10–3600 秒的数字。')
+    if options['response_mode'] not in ('json', 'stream'):
+        raise ValueError('API 响应方式必须是 json 或 stream。')
+    if options['thinking_mode'] not in ('auto', 'provider_default'):
+        raise ValueError('思考设置必须是 auto 或 provider_default。')
+    extra = options['extra_body']
+    if not isinstance(extra, dict): raise ValueError('额外请求参数必须是 JSON 对象。')
+    forbidden = {'model', 'messages', 'stream', 'api_key', 'authorization', 'base_url'}
+    if any(str(name).lower() in forbidden for name in extra):
+        raise ValueError('额外参数不能覆盖 model、messages、stream、地址或密钥；密钥请填入 API Key。')
+    try:
+        json.dumps(extra, allow_nan=False)
+    except (TypeError, ValueError):
+        raise ValueError('额外请求参数必须是有效 JSON。') from None
+    return options
+
+
+def save_settings(base_url, api_key=None, **options):
     url = str(base_url).strip().rstrip('/')
     parts = urlsplit(url)
     if parts.scheme not in ('https', 'http') or not parts.netloc or parts.username or parts.password or parts.query or parts.fragment:
@@ -64,6 +91,8 @@ def save_settings(base_url, api_key=None):
     if parts.scheme == 'http' and parts.hostname not in ('127.0.0.1', 'localhost', '::1'):
         raise ValueError('非本机 API 必须使用 HTTPS。')
     c = settings()
+    if any(name not in API_DEFAULTS for name in options): raise ValueError('未知的 API 设置。')
+    c.update(api_options({**c, **options}))
     if c.get('base_url') != url and not str(api_key or '').strip():
         c.pop('api_key', None)
     c['base_url'] = url
@@ -73,17 +102,144 @@ def save_settings(base_url, api_key=None):
     return public_settings()
 
 
+def request_options(profile, model):
+    """Unknown gateways receive no guessed vendor fields; explicit options win."""
+    options = api_options(profile)
+    host = (urlsplit(profile['base_url']).hostname or '').lower()
+    native_qwen = host in ('dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com',
+                          'dashscope-us.aliyuncs.com', 'maas.qwencloudapi.com') or host.endswith('.maas.aliyuncs.com')
+    ofox = host in ('api.ofox.io', 'api.ofox.ai')
+    name = str(model).lower().rsplit('/', 1)[-1]
+    # Only known hybrid families can disable thinking; never force it on thinking-only models.
+    hybrid = name in {'qwen3.8-max', 'qwen3.8-flash', 'qwen3.8-omni-flash',
+                      'qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash',
+                      'qwen3.6-plus', 'qwen3.6-flash', 'qwen3.5-plus', 'qwen3.5-flash'}
+    result = {}
+    if options['thinking_mode'] == 'auto' and hybrid:
+        if host == 'openrouter.ai':
+            result['reasoning'] = {'effort': 'none'}
+        elif native_qwen or ofox:
+            if name.startswith('qwen3.8-omni-flash'):
+                result['reasoning_effort'] = 'none'
+            else:
+                result['enable_thinking'] = False
+    result.update(options['extra_body'])
+    return result
+
+
+def content_text(content):
+    if isinstance(content, str): return content
+    if isinstance(content, list):
+        return ''.join(item['text'] for item in content
+                       if isinstance(item, dict) and item.get('type') in ('text', 'output_text')
+                       and isinstance(item.get('text'), str))
+    return ''
+
+
+def safe_error(value, config):
+    """Never echo credentials, image data, or a provider's full response body."""
+    text = str(value)
+    if config.get('api_key'): text = text.replace(str(config['api_key']), '<REDACTED>')
+    text = re.sub(r'(?i)Bearer\s+[^\s"\x27,;]+|\bsk-[\w-]+', '<REDACTED>', text)
+    text = re.sub(r'data:[^\s"\x27]+', '<image data>', text)
+    text = re.sub(r'https?://[^\s"\x27]+', '<URL>', text)
+    return ' '.join(text.split())[:400]
+
+
+def provider_error(value, config):
+    error = value.get('error') if isinstance(value, dict) else None
+    if not error and isinstance(value, dict) and value.get('code') and value.get('message') and 'choices' not in value:
+        error = value
+    if not error: return ''
+    if isinstance(error, dict):
+        return safe_error(' / '.join(str(error[key]) for key in ('code', 'type', 'message') if error.get(key)), config)
+    return safe_error(error, config)
+
+
+def read_stream(response, first_line, config):
+    parts, finish, done, event = [], None, False, []
+
+    def consume():
+        nonlocal finish, done
+        if not event: return
+        data = '\n'.join(event); event.clear()
+        if data.strip() == '[DONE]':
+            done = True; return
+        value = json.loads(data)
+        error = provider_error(value, config)
+        if error: raise ValueError('扩写 API 服务端错误：'+error+'；没有自动重试。')
+        if not isinstance(value, dict): raise ValueError('扩写 API 流式数据不是 Chat Completions 对象。')
+        choices = value.get('choices', [])
+        if not isinstance(choices, list): raise ValueError('扩写 API 流式 choices 格式无效。')
+        for choice in choices:
+            if not isinstance(choice, dict): raise ValueError('扩写 API 流式 choices 格式无效。')
+            if choice.get('index', 0) != 0: continue
+            delta = choice.get('delta') or {}
+            if not isinstance(delta, dict): raise ValueError('扩写 API 流式 delta 格式无效。')
+            parts.append(content_text(delta.get('content')))
+            if choice.get('finish_reason') is not None: finish = choice['finish_reason']
+
+    line = first_line
+    while line:
+        text = line.decode('utf-8-sig').rstrip('\r\n')
+        if text.startswith('data:'):
+            event.append(text[5:].lstrip(' '))
+        elif not text:
+            consume()
+            if done: break
+        line = response.readline()
+    consume()
+    if not done and finish is None:
+        raise ValueError('扩写 API 流式响应中断，未收到完成标记；没有缓存半成品，也没有自动重试。')
+    return {'choices': [{'message': {'content': ''.join(parts)}, 'finish_reason': finish}]}
+
+
+def read_response(response, config):
+    first = response.readline()
+    while first and not first.strip(): first = response.readline()
+    content_type = response.headers.get('Content-Type', '') if getattr(response, 'headers', None) else ''
+    if 'text/event-stream' in content_type.lower() or first.decode('utf-8-sig').lstrip().startswith(('data:', ':', 'event:', 'id:', 'retry:')):
+        return read_stream(response, first, config)
+    value = json.loads((first+response.read()).decode('utf-8-sig'))
+    error = provider_error(value, config)
+    if error: raise ValueError('扩写 API 服务端错误：'+error+'；没有自动重试。')
+    if not isinstance(value, dict): raise ValueError('扩写 API 返回的 JSON 不是 Chat Completions 对象。')
+    return value
+
+
 def call(path, payload=None):
     c = settings()
     if not c.get('api_key'): raise ValueError('请在扩写节点的 API 设置中保存密钥。')
+    options = api_options(c)
     req = Request(c['base_url'].rstrip('/')+path, data=None if payload is None else json.dumps(payload).encode(),
-                  headers={'Authorization': 'Bearer '+c['api_key'], 'Content-Type': 'application/json'})
+                  headers={'Authorization': 'Bearer '+c['api_key'], 'Content-Type': 'application/json',
+                           'Accept': 'application/json, text/event-stream'})
+    started = time.monotonic()
+
+    def context(): return f"等待超时设置 {options['timeout_seconds']:g}s，已耗时 {time.monotonic()-started:.1f}s"
+
     try:
-        with urlopen(req, timeout=90) as response: return json.load(response)
+        with urlopen(req, timeout=options['timeout_seconds']) as response: return read_response(response, c)
     except HTTPError as error:
-        raise ValueError(f'扩写 API 请求失败（HTTP {error.code}）。请检查模型、权限、余额或多图支持；没有自动重试。') from None
-    except (URLError, TimeoutError, json.JSONDecodeError):
-        raise ValueError('扩写 API 连接超时、连接失败或响应格式无效；没有自动重试。') from None
+        detail = ''
+        try:
+            with error: detail = provider_error(json.loads(error.read(65536)), c)
+        except (ValueError, OSError): pass
+        hint = '请检查地址、模型、权限和请求参数。' if error.code < 500 and error.code != 429 else '服务限流或上游暂时不可用，请稍后手动重试。'
+        raise ValueError(f'扩写 API 请求失败（HTTP {error.code}，{context()}）：{detail or hint}；没有自动重试。') from None
+    except TimeoutError:
+        raise ValueError(f'扩写 API 连接或读取超时（{context()}）。可提高等待超时或选择流式响应；请求可能已在服务端执行，没有自动重试。') from None
+    except URLError as error:
+        if isinstance(error.reason, TimeoutError):
+            raise ValueError(f'扩写 API 连接超时（{context()}）；没有自动重试。') from None
+        kind = 'DNS 解析失败' if isinstance(error.reason, socket.gaierror) else ('TLS/证书连接失败' if isinstance(error.reason, ssl.SSLError) else '连接失败')
+        raise ValueError(f'扩写 API {kind}（{context()}）：{safe_error(error.reason, c)}；请检查网络、代理和 API 地址，没有自动重试。') from None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ValueError(f'扩写 API 响应不是有效 JSON/SSE（{context()}）。服务可能返回了网页、空响应或损坏数据；没有自动重试。') from None
+    except ssl.SSLError as error:
+        raise ValueError(f'扩写 API TLS/证书连接失败（{context()}）：{safe_error(error, c)}；没有自动重试。') from None
+    except (OSError, EOFError, HTTPException) as error:
+        raise ValueError(f'扩写 API 读取连接中断（{context()}）：{safe_error(error, c)}；没有自动重试。') from None
 
 
 def validate_prompt(text, count):
@@ -128,12 +284,16 @@ def validate_prompt(text, count):
     return text
 
 
-def cache_key(material, mode, model, rule, revision):
+def cache_key(material, mode, model, rule, revision, profile=None):
     context = {k: material[k] for k in (
         'hashes','material_note','visual_type','mode','brief','duration',
         'generation_frames','generation_seconds','audio_role','audio_section','audio_role_reason')}
     context['material_note'] = model_material_note(context['material_note'], len(material['paths']))
-    return hashlib.sha256(json.dumps([context, mode, model, rule, revision, public_settings()['base_url'], GUARD], sort_keys=True).encode()).hexdigest()
+    profile = public_settings() if profile is None else profile
+    values = [context, mode, model, rule, revision, profile['base_url'], GUARD]
+    parameters = request_options(profile, model)
+    if parameters: values.append(parameters)
+    return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
 
 
 def cache_source(material, key, mode):
@@ -148,7 +308,8 @@ def expand(material, mode, model, rule, revision=0):
     if not material or not material.get('paths'):
         raise ValueError('请先在长视频审核面板启用内置素材并上传参考图。')
     if mode not in ('vision', 'text', 'manual'): raise ValueError('扩写方式无效。')
-    key = cache_key(material, mode, model, rule, revision)
+    profile = public_settings()
+    key = cache_key(material, mode, model, rule, revision, profile)
     if material.get('expanded_key') == key and material.get('expanded_prompt'):
         return validate_prompt(material['expanded_prompt'], len(material['paths']))
     if mode == 'manual': return material['brief']
@@ -169,15 +330,17 @@ def expand(material, mode, model, rule, revision=0):
                     im = ImageOps.exif_transpose(im).convert('RGB'); im.thumbnail((1280,1280))
                     b = io.BytesIO(); im.save(b, format='JPEG', quality=88)
                 content.append({'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+base64.b64encode(b.getvalue()).decode()}})
-        payload = {'model':model, 'messages':[{'role':'system','content':GUARD+'\n'+rule}, {'role':'user','content':content}], 'max_tokens':8192, 'stream':False}
-        if model.lower().startswith('qwen/'):
-            payload.update(enable_thinking=False, reasoning={'effort':'none'})
+        payload = {'model':model, 'messages':[{'role':'system','content':GUARD+'\n'+rule}, {'role':'user','content':content}], 'max_tokens':8192,
+                   'stream':api_options(profile)['response_mode'] == 'stream'}
+        for name, value in request_options(profile, model).items():
+            if value is None: payload.pop(name, None)
+            else: payload[name] = value
         response = call('/chat/completions', payload)
         try:
             choice = response['choices'][0]
             if choice.get('finish_reason') == 'length': raise ValueError('扩写结果被截断，请调整模型或规则。')
-            answer = choice['message'].get('content')
-            if not isinstance(answer, str) or not answer.strip():
+            answer = content_text(choice['message'].get('content'))
+            if not answer.strip():
                 raise ValueError('模型没有返回正文，可能只返回了思考内容；请检查模型思考设置或更换模型。')
             try:
                 text = validate_prompt(answer.strip(), len(material['paths']))
@@ -185,7 +348,7 @@ def expand(material, mode, model, rule, revision=0):
                 cache.mkdir(parents=True, exist_ok=True)
                 path.with_suffix('.invalid.txt').write_text(answer, encoding='utf-8')
                 raise
-        except (KeyError, IndexError, TypeError): raise ValueError('扩写 API 未返回有效文本。') from None
+        except (KeyError, IndexError, TypeError, AttributeError): raise ValueError('扩写 API 未返回有效文本。') from None
         cache.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix('.tmp'); tmp.write_text(json.dumps({'text':text, 'model':model},ensure_ascii=False),encoding='utf-8'); tmp.replace(path)
         return text

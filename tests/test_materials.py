@@ -277,11 +277,11 @@ class MaterialTests(unittest.TestCase):
 
     def test_qwen_non_thinking_and_empty_answer_rejection(self):
         packet = materials.packet(self.plan,self.plan['segments'][0],self.directory)
-        with patch.object(expansion,'public_settings',return_value={'base_url':'https://example.test/v1'}), patch.object(expansion,'call',return_value={'choices':[{'message':{'content':''},'finish_reason':'stop'}]}) as call:
+        with patch.object(expansion,'public_settings',return_value={'base_url':'https://api.ofox.io/v1'}), patch.object(expansion,'call',return_value={'choices':[{'message':{'content':''},'finish_reason':'stop'}]}) as call:
             with self.assertRaisesRegex(ValueError,'没有返回正文'):
                 expansion.expand(packet,'vision','qwen/qwen3.8-flash','r')
             self.assertFalse(call.call_args.args[1]['enable_thinking'])
-            self.assertEqual(call.call_args.args[1]['reasoning'],{'effort':'none'})
+            self.assertNotIn('reasoning', call.call_args.args[1])
 
     def test_pending_expansion_settings_refresh_preserves_other_nodes(self):
         snapshot = {'prompt':{'1':{'class_type':'H3LVPromptExpand','inputs':{'material':['5',5], 'model':'old','rule':'old','mode':'vision','revision':0}}, '2':{'class_type':'Sampler','inputs':{'steps':6}}}}
