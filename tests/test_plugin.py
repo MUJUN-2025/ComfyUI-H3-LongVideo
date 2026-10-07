@@ -1683,7 +1683,8 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             core.write_plan(d, plan)
             core.state_file(directory, "queue_snapshot.json").write_text(json.dumps({
                 "loader_id": "1", "video_id": "7",
-                "prompt": {"1": {"class_type": "H3LVUnified", "inputs": {}}}
+                "prompt": {"1": {"class_type": "H3LVUnified", "inputs": {}},
+                           "7": {"class_type": "VHS_VideoCombine", "inputs": {}}}
             }), encoding="utf-8")
             indices, histories = [], {}
             class Queue:
@@ -1722,7 +1723,8 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             core.write_plan(d, plan)
             core.state_file(directory, "queue_snapshot.json").write_text(json.dumps({
                 "loader_id": "1", "video_id": "7",
-                "prompt": {"1": {"class_type": "H3LVUnified", "inputs": {}}}
+                "prompt": {"1": {"class_type": "H3LVUnified", "inputs": {}},
+                           "7": {"class_type": "VHS_VideoCombine", "inputs": {}}}
             }), encoding="utf-8")
             indices, histories = [], {}
             class Queue:
@@ -1753,7 +1755,8 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             directory = core.project_path(d, plan["id"])
             core.state_file(directory, "queue_snapshot.json").write_text(json.dumps({
                 "loader_id": "1", "video_id": "7",
-                "prompt": {"1": {"class_type": "H3LVUnified", "inputs": {}}}
+                "prompt": {"1": {"class_type": "H3LVUnified", "inputs": {}},
+                           "7": {"class_type": "VHS_VideoCombine", "inputs": {}}}
             }), encoding="utf-8")
             indices, histories = [], {}
             class Queue:
@@ -1791,7 +1794,8 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
             core.write_plan(d, plan)
             core.state_file(directory, "queue_snapshot.json").write_text(json.dumps({
                 "loader_id": "1", "video_id": "7",
-                "prompt": {"1": {"class_type": "H3LVUnified", "inputs": {}}}
+                "prompt": {"1": {"class_type": "H3LVUnified", "inputs": {}},
+                           "7": {"class_type": "VHS_VideoCombine", "inputs": {}}}
             }), encoding="utf-8")
             histories = {}
             class Queue:

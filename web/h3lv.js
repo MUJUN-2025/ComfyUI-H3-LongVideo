@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { materialEditor } from "./materials.js";
 import { createTimeline, pcmWavePeaks } from "./timeline.js";
+import { generationOutputs } from "./video_outputs.js";
 
 if (!document.querySelector("link[data-h3lv-style]")) {
   const link = document.createElement("link");
@@ -247,16 +248,42 @@ function editPromptDialog(index, value) {
   });
 }
 
+function chooseVideoOutput(outputs) {
+  return new Promise(resolve => {
+    const shade = element("div", undefined, document.body, "h3lv-shade h3lv-settings-shade");
+    const panel = element("div", undefined, shade, "h3lv-settings-panel h3lv-confirm-panel");
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+    element("h2", "选择本次分段保存节点", panel);
+    element("p", "检测到多个视频输出。顺序生成只执行选中的保存分支。", panel, "h3lv-help");
+    const select = element("select", undefined, panel);
+    select.setAttribute("aria-label", "分段保存节点");
+    for (const [id, node] of outputs) {
+      const name = node.class_type === "SaveVideo" ? "原生保存视频" : "VHS Video Combine";
+      element("option", `${name} · #${id}`, select).value = id;
+    }
+    select.value = (outputs.find(([, node]) => node.class_type === "SaveVideo") || outputs[0])[0];
+    const finish = value => {
+      window.removeEventListener("keydown", onKeyDown);
+      shade.remove(); resolve(value);
+    };
+    const onKeyDown = event => {if (event.key === "Escape") finish(null);};
+    window.addEventListener("keydown", onKeyDown);
+    const buttons = element("div", undefined, panel, "h3lv-actions");
+    actionButton(buttons, "取消", () => finish(null));
+    actionButton(buttons, "使用此输出", () => finish(select.value), "primary");
+    shade.onclick = event => {if (event.target === shade) finish(null);};
+    queueMicrotask(() => select.focus());
+  });
+}
+
 async function buildGenerationPayload() {
   const snapshot = await app.graphToPrompt();
-  const loaders = Object.entries(snapshot.output).filter(([, node]) =>
-    node.class_type === "H3LVUnified");
-  const videos = Object.entries(snapshot.output).filter(([, node]) => node.class_type === "VHS_VideoCombine");
-  if (loaders.length !== 1 || videos.length !== 1) {
-    throw new Error("当前工作流需要且只能有一个 H3 长视频节点和一个 VHS 输出节点。");
-  }
+  const {loaderId, outputs} = generationOutputs(snapshot.output);
+  const videoId = outputs.length === 1 ? outputs[0][0] : await chooseVideoOutput(outputs);
+  if (!videoId) throw new Error("已取消选择视频输出；没有提交生成任务。");
   return {prompt: snapshot.output, workflow: snapshot.workflow,
-    loader_id: loaders[0][0], video_id: videos[0][0], client_id: api.clientId || ""};
+    loader_id: loaderId, video_id: videoId, client_id: api.clientId || ""};
 }
 
 const startingProjects = new Set();
@@ -292,7 +319,7 @@ async function startApprovedSequence(owner, plan) {
       payload.replace_snapshot = true;
     }
     await request(`/h3lv/project/${plan.id}/run`, payload);
-    clearVideoNodePreview();
+    clearVideoNodePreview(payload.video_id);
     toast("已开始顺序生成", "可在 ComfyUI 任务队列中查看进度；分段审核界面不会自动打开。");
   } finally {
     startingProjects.delete(plan.id);
@@ -453,7 +480,7 @@ async function removeReferenceImage(projectId, name) {
   } catch {}
 }
 
-function showFinalOnVideoNode(preview, projectId) {
+function showFinalOnVideoNode(preview, projectId, videoId) {
   if (!preview?.filename) return false;
   const nodes = app.graph?._nodes || [];
   const owners = nodes.filter(node => node.comfyClass === "H3LVUnified");
@@ -461,19 +488,36 @@ function showFinalOnVideoNode(preview, projectId) {
     node.properties?.h3lv_project || node.widgets?.find(item => item.name === "project_id")?.value || ""
   ).trim()).filter(Boolean);
   if (projectId && ownerProjects.length && !ownerProjects.includes(String(projectId))) return false;
-  const videos = nodes.filter(node => node.comfyClass === "VHS_VideoCombine");
-  if (videos.length !== 1 || typeof videos[0].updateParameters !== "function") return false;
+  const videos = nodes.filter(node => ["VHS_VideoCombine", "SaveVideo"].includes(node.comfyClass)
+    && (!videoId || String(node.id) === String(videoId)));
+  if (videos.length !== 1) return false;
   const key = `${preview.subfolder || ""}/${preview.filename}`;
   if (videos[0].__h3lvFinalPreview === key) return true;
-  videos[0].updateParameters(preview, true);
+  if (videos[0].comfyClass === "SaveVideo") {
+    api.dispatchCustomEvent("executed", {
+      node: String(videos[0].id), display_node: String(videos[0].id),
+      output: {images: [{filename: preview.filename, subfolder: preview.subfolder || "",
+        type: preview.type || "output"}], animated: [true]},
+    });
+  } else if (typeof videos[0].updateParameters === "function") {
+    videos[0].updateParameters(preview, true);
+  } else return false;
   videos[0].__h3lvFinalPreview = key;
   return true;
 }
 
-function clearVideoNodePreview() {
-  const videos = (app.graph?._nodes || []).filter(node => node.comfyClass === "VHS_VideoCombine");
+function clearVideoNodePreview(videoId) {
+  const videos = (app.graph?._nodes || []).filter(node =>
+    ["VHS_VideoCombine", "SaveVideo"].includes(node.comfyClass)
+    && (!videoId || String(node.id) === String(videoId)));
   if (videos.length !== 1) return false;
   const node = videos[0];
+  delete node.__h3lvFinalPreview;
+  if (node.comfyClass === "SaveVideo") {
+    api.dispatchCustomEvent("executed", {node: String(node.id), display_node: String(node.id),
+      output: {images: [], animated: [true]}});
+    return true;
+  }
   const preview = node.widgets?.find(widget => widget.name === "videopreview");
   if (!preview) return false;
   preview.videoEl?.pause();
@@ -485,7 +529,6 @@ function clearVideoNodePreview() {
   if (preview.parentEl) preview.parentEl.hidden = true;
   if (preview.value && typeof preview.value === "object") preview.value.params = {};
   preview.aspectRatio = null;
-  delete node.__h3lvFinalPreview;
   node.setDirtyCanvas?.(true, true);
   return true;
 }
@@ -498,7 +541,7 @@ async function restoreFinalVideoPreview() {
   for (const projectId of projectIds) {
     try {
       const plan = await request(`/h3lv/project/${encodeURIComponent(projectId)}`);
-      if (plan.final_preview) showFinalOnVideoNode(plan.final_preview, projectId);
+      if (plan.final_preview) showFinalOnVideoNode(plan.final_preview, projectId, plan.video_output_id);
     } catch {}
   }
 }
@@ -1025,7 +1068,7 @@ async function openReview(owner) {
     analysis = await request(endpoint("/analysis"));
     if (widget) widget.value = plan.id;
     owner.properties = {...owner.properties, h3lv_project: plan.id};
-    if (plan.final_preview) showFinalOnVideoNode(plan.final_preview, plan.id);
+    if (plan.final_preview) showFinalOnVideoNode(plan.final_preview, plan.id, plan.video_output_id);
     dirty = false; selected = Math.min(selected, plan.segments.length-1);
     status.textContent = statusText(plan);
     status.classList.remove("is-dirty");
@@ -1115,7 +1158,7 @@ async function openReview(owner) {
       payload.replace_snapshot = true;
     }
     await request(endpoint("/run"), payload);
-    clearVideoNodePreview();
+    clearVideoNodePreview(payload.video_id);
     await load();
   }, "run");
   actionButton(controls, "当前段完成后暂停", async () => {
@@ -1163,11 +1206,11 @@ app.registerExtension({
       app.__h3lvFinalListenerInstalled = true;
       api.addEventListener("h3lv-final", event => {
         const data = event.detail || {};
-        showFinalOnVideoNode(data.preview, data.project_id);
+        showFinalOnVideoNode(data.preview, data.project_id, data.video_id);
       });
       api.addEventListener("h3lv-segment", event => {
         const data = event.detail || {};
-        showFinalOnVideoNode(data.preview, data.project_id);
+        showFinalOnVideoNode(data.preview, data.project_id, data.video_id);
       });
       api.addEventListener("h3lv-model-download", event => {
         const data = event.detail || {};

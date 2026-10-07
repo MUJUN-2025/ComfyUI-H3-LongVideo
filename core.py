@@ -121,7 +121,7 @@ def normalize_default_reference_count(value):
 
 
 def output_preview(output_root, path, fps=24):
-    """Describe an output file in the format consumed by VHS video previews."""
+    """Describe an output file for review, native and VHS video previews."""
     if not path:
         return None
     output_root = Path(output_root).resolve()
@@ -130,8 +130,9 @@ def output_preview(output_root, path, fps=24):
         return None
     relative = path.relative_to(output_root)
     subfolder = "" if relative.parent == Path(".") else relative.parent.as_posix()
+    video_format = {".mp4": "h264-mp4", ".webm": "webm", ".mkv": "mkv"}.get(path.suffix.lower(), "h264-mp4")
     return {"filename": path.name, "subfolder": subfolder, "type": "output",
-            "format": "video/h264-mp4", "frame_rate": float(fps), "fullpath": str(path)}
+            "format": f"video/{video_format}", "frame_rate": float(fps), "fullpath": str(path)}
 
 
 def state_file(directory, name):

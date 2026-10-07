@@ -17,8 +17,32 @@ from .core import (LOCK, REFERENCE_MIRROR_ROOT, archive_take, audio_file, finger
 
 TASKS = {}
 SEGMENT_NODE_TYPES = {"H3LVUnified"}
+VIDEO_NODE_TYPES = {"VHS_VideoCombine", "SaveVideo"}
 OUTPUT_CONTRACT_VERSION = 4
 FPS_OUTPUT_INDEX = 12
+
+
+def video_rate_input(prompt, video):
+    node = prompt.get(str(video), {})
+    if node.get("class_type") == "VHS_VideoCombine":
+        return str(video), "frame_rate"
+    if node.get("class_type") == "SaveVideo":
+        source = node.get("inputs", {}).get("video")
+        if isinstance(source, (list, tuple)) and len(source) == 2 \
+                and prompt.get(str(source[0]), {}).get("class_type") == "CreateVideo":
+            return str(source[0]), "fps"
+        raise ValueError("原生保存视频需要连接“创建视频（CreateVideo）”节点。")
+    raise ValueError("请选择 VHS Video Combine 或原生保存视频（SaveVideo）输出节点。")
+
+
+def bind_video_output(prompt, loader, video):
+    """Bind only the selected queue output, leaving canvas and codec settings intact."""
+    rate_node, rate_key = video_rate_input(prompt, video)
+    prompt[rate_node].setdefault("inputs", {})[rate_key] = [str(loader), FPS_OUTPUT_INDEX]
+    inputs = prompt[str(video)].setdefault("inputs", {})
+    inputs["filename_prefix"] = [str(loader), 3]
+    if prompt[str(video)]["class_type"] == "VHS_VideoCombine":
+        inputs["save_output"] = True
 
 
 def restore_legacy_prompt_rules(snapshot, current_prompt):
@@ -109,12 +133,19 @@ def generation_graph_fingerprint(snapshot):
     loader_inputs.pop("project_id", None)
     loader_inputs.pop("segment_index", None)
     video_inputs = prompt.get(video, {}).get("inputs", {})
-    frame_rate = video_inputs.get("frame_rate")
+    if prompt.get(video, {}).get("class_type") == "SaveVideo":
+        rate_node, rate_key = video_rate_input(prompt, video)
+        video_inputs = prompt[rate_node].get("inputs", {})
+    else:
+        rate_key = "frame_rate"
+    frame_rate = video_inputs.get(rate_key)
     if isinstance(frame_rate, (list, tuple)) and len(frame_rate) >= 2 \
             and str(frame_rate[0]) == loader and frame_rate[1] == FPS_OUTPUT_INDEX:
-        video_inputs["frame_rate"] = 24.0
+        video_inputs[rate_key] = 24.0
     encoded = json.dumps(prompt, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":")).encode()
+    if sum(node.get("class_type") in VIDEO_NODE_TYPES for node in prompt.values()) > 1:
+        encoded += b"\0" + video.encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -143,13 +174,16 @@ def halt_status(plan):
 def video_from_history(history, video_node, directory, output_root):
     if history.get("status", {}).get("status_str") != "success":
         raise RuntimeError("该段 ComfyUI 生成失败，请检查原始节点报错，再点击重试。")
-    entries = history.get("outputs", {}).get(str(video_node), {}).get("gifs", [])
+    output = history.get("outputs", {}).get(str(video_node), {})
+    entries = list(output.get("gifs", [])) + list(output.get("images", []))
     for entry in reversed(entries):
-        if entry.get("type") == "output" and str(entry.get("filename", "")).lower().endswith(".mp4"):
+        if entry.get("type") == "output" and Path(str(entry.get("filename", ""))).suffix.lower() \
+                in {".mp4", ".webm", ".mkv"}:
             path = inside(directory, Path(output_root)/entry.get("subfolder", "")/entry["filename"])
             if path.is_file():
                 return str(path)
-    raise RuntimeError("未找到当前项目内的 MP4。请把一体化节点的 filename_prefix 接到 VHS，并开启 save_output。")
+    raise RuntimeError("所选输出节点未生成当前项目内的视频文件。请使用 VHS Video Combine 或"
+                       "“创建视频 → 保存视频”，输出 MP4、WebM 或 MKV。")
 
 
 def queued_ids(server):
@@ -352,6 +386,7 @@ async def execute_project(root, project_id, server):
                 prompt = copy.deepcopy(snapshot["prompt"])
                 prompt[snapshot["loader_id"]]["inputs"].update(project_id=project_id, segment_index=index)
                 apply_segment_references(prompt, plan, row, directory)
+                bind_video_output(prompt, snapshot["loader_id"], snapshot["video_id"])
                 valid = await execution.validate_prompt(prompt_id, prompt, [snapshot["video_id"]])
                 if not valid[0]:
                     raise ValueError("视频工作流校验失败："+str(valid[1]))
@@ -406,7 +441,8 @@ async def execute_project(root, project_id, server):
             preview = output_preview(folder_paths.get_output_directory(), video)
             if preview and callable(getattr(server, "send_sync", None)):
                 server.send_sync("h3lv-segment", {
-                    "project_id": project_id, "segment_index": index, "preview": preview})
+                    "project_id": project_id, "segment_index": index, "preview": preview,
+                    "video_id": snapshot["video_id"]})
         plan = read_plan(root, project_id)
         if only_segment is not None:
             plan.pop("run_only_segment", None)
@@ -430,7 +466,8 @@ async def execute_project(root, project_id, server):
         write_plan(root, plan)
         preview = output_preview(folder_paths.get_output_directory(), plan.get("final_video"))
         if preview and callable(getattr(server, "send_sync", None)):
-            server.send_sync("h3lv-final", {"project_id": project_id, "preview": preview})
+            server.send_sync("h3lv-final", {"project_id": project_id, "preview": preview,
+                                           "video_id": snapshot["video_id"]})
     except Exception as exc:
         plan = read_plan(root, project_id)
         plan.pop("run_only_segment", None)
@@ -463,7 +500,8 @@ def start(root, project_id, payload, server):
             video = str(payload.get("video_id") or previous_snapshot.get("video_id") or "")
             current_prompt = copy.deepcopy(payload.get("prompt", {}))
             if (current_prompt.get(loader, {}).get("class_type") in SEGMENT_NODE_TYPES
-                    and current_prompt.get(video, {}).get("class_type") == "VHS_VideoCombine"):
+                    and current_prompt.get(video, {}).get("class_type") in VIDEO_NODE_TYPES):
+                video_rate_input(current_prompt, video)
                 current_snapshot = normalize_output_contract({
                     "prompt": current_prompt, "loader_id": loader, "video_id": video,
                     "workflow": payload.get("workflow", {}),
@@ -495,8 +533,7 @@ def start(root, project_id, payload, server):
                 video = str(payload.get("video_id", ""))
                 if prompt.get(loader, {}).get("class_type") not in SEGMENT_NODE_TYPES:
                     raise ValueError("请打开含 H3 分段读取节点或一体化节点的视频工作流。")
-                if prompt.get(video, {}).get("class_type") != "VHS_VideoCombine":
-                    raise ValueError("请选择此工作流的 VHS Video Combine 输出节点。")
+                video_rate_input(prompt, video)
                 current_snapshot = normalize_output_contract({
                     "prompt": prompt, "loader_id": loader, "video_id": video,
                     "workflow": payload.get("workflow", {}),
@@ -523,7 +560,8 @@ def start(root, project_id, payload, server):
             plan.pop("run_only_segment", None)
         else:
             plan["run_only_segment"] = only_segment
-        plan.update(run_status="running", pause_requested=False, stop_requested=False, error="")
+        plan.update(run_status="running", pause_requested=False, stop_requested=False, error="",
+                    video_output_id=snapshot["video_id"])
         write_plan(root, plan)
         TASKS[project_id] = asyncio.create_task(execute_project(root, project_id, server))
 

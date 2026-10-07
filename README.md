@@ -19,7 +19,7 @@
 1. 将本仓库克隆或解压至 `ComfyUI/custom_nodes/ComfyUI-H3-LongVideo`。
 2. 在 ComfyUI 使用的 Python 环境中安装本插件的 `requirements.txt` 依赖，并确保 `ffmpeg`、`ffprobe` 可用。
 3. 重启 ComfyUI，导入 [一体化示例工作流](examples/04_H3长视频_单节点一体化.json)。
-4. 安装示例所需的外部节点：`comfyui-vrgamedevgirl`、`ComfyUI-VideoHelperSuite`、`ComfyUI-KJNodes`。
+4. 安装示例所需的外部节点：`comfyui-vrgamedevgirl`、`ComfyUI-VideoHelperSuite`、`ComfyUI-KJNodes`。自行改用原生“创建视频 → 保存视频”输出时，保存链路不需要 VideoHelperSuite。
 5. 在工作流中选择已安装的 MiniMax H3 Ref2VA、LoRA、VAE 和 CLIP 权重，并在插件的“API 设置与模型选择”中配置分镜提示词生成器使用的服务。
 
 示例将长视频节点的 `segment_material`、六路图片和 `fps` 分别接到分镜提示词生成器、H3 视频参考和视频合成节点。分镜提示词生成器默认使用 `vision` 模式；先配置可处理多图的模型服务，再开始顺序生成。示例使用 Ref2VA 配合 Turbo LoRA，采样配置为 `euler / beta / 10 步`；实际尺寸由 ResolutionSelector 的 `16:9 / 0.4 MP / 32 倍数` 设置决定，覆盖 H3 节点里保存的宽高值。请按本机权重名称重新选择模型，并根据素材方向和显卡条件调整尺寸。
@@ -83,6 +83,17 @@
 
 确认分段后，点击审核面板的 **“开始顺序生成”**，或运行整张工作流。插件依次生成各段视频，完成后自动合成并配回原音频。
 
+分段保存支持两种链路：
+
+- **VHS Video Combine**：沿用配套示例的图像、音频连接。
+- **ComfyUI 原生创建视频 → 保存视频**：解码图像接 `CreateVideo.images`，长视频节点的 `original_audio_padded` 接 `CreateVideo.audio`，再将 `CreateVideo` 的视频输出接 `SaveVideo.video`。建议保存格式用 `auto` 或 `mp4`、编码用 `auto` 或 `h264`。
+
+顺序生成时，插件自动为所选保存分支绑定项目分段文件名前缀和 **24fps**，VHS 自动开启 `save_output`；无需为了换保存节点重新分析音频。自动绑定只作用于提交的分段任务，不修改画布或其他输出节点，编码、画质等设置仍沿用所选节点。原生链路的 MP4、WebM、MKV 分段都可收集并合成，最终成片统一为 MP4。H3 分段时间线仍以 24fps 计算，不支持改成其他帧率后直接拼接。
+
+画布可以保留多个视频输出；开始顺序生成或重新生成本段时，如有多个连接到 H3 生成链路的可用输出，会弹窗选择本次分段保存节点，仅执行选中的分支。未连接或属于其他图像链路的输出不参与选择。
+
+VHS 的 `frame_rate` 已转为连线输入时，数字输入框可能不再显示；可检查是否接着长视频节点的 `fps`，这本身不表示帧率参数丢失。如 VHS 确实无法使用，可切换上述原生链路。更新插件后请重启 ComfyUI 并刷新浏览器。
+
 最终成片保存在：
 
 ```text
@@ -130,7 +141,7 @@ API 失败会区分超时、DNS／连接／TLS、HTTP 状态、服务端错误�
 
 此兼容层面向 Bearer API Key 鉴权、标准 `/chat/completions` 路径的服务，不代表所有模型都支持多图、思考关闭或所有额外参数；原生 Anthropic／Gemini、仅 Responses 的接口，以及采用部署路由和其他鉴权方式的服务不在此接口范围。更新后重启 ComfyUI 并刷新浏览器，原工作流连线和采样设置无需更改。
 
-自行搭建工作流时，将 `segment_material` 接入插件的“H3 长视频 · 分镜提示词生成器”，再把生成结果接入 H3 提示词输入。若使用外部工具写提示词，可在分段界面填写“手写提示词”，将长视频节点末尾的 `segment_prompt` 直接接入 H3 `prompt`；该接口不会改写、校验或回退。H3 的 `prompt` 同时只能选择一条连线。将节点末尾的 `fps` 接入 VHS Video Combine 的 `frame_rate`，使分段输出始终按 24fps 编码。顺序生成工作流需保留一个 `H3LVUnified` 节点和一个 VHS Video Combine 输出节点。
+自行搭建工作流时，将 `segment_material` 接入插件的“H3 长视频 · 分镜提示词生成器”，再把生成结果接入 H3 提示词输入。若使用外部工具写提示词，可在分段界面填写“手写提示词”，将长视频节点末尾的 `segment_prompt` 直接接入 H3 `prompt`；该接口不会改写、校验或回退。H3 的 `prompt` 同时只能选择一条连线。顺序生成工作流保留一个 `H3LVUnified` 节点，输出可选 VHS Video Combine 或原生 `CreateVideo → SaveVideo`。也可在画布上将 `filename_prefix` 接到保存节点、`fps` 接到 VHS 的 `frame_rate` 或原生创建视频的 `fps`，明确显示分段保存连接。
 
 ## 使用建议
 

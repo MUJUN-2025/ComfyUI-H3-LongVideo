@@ -546,7 +546,8 @@ def register_routes():
             preview = output_preview(storage_root().parent, final)
             plan["final_preview"] = preview
             if preview and callable(getattr(server, "send_sync", None)):
-                server.send_sync("h3lv-final", {"project_id": pid, "preview": preview})
+                server.send_sync("h3lv-final", {"project_id": pid, "preview": preview,
+                                               "video_id": plan.get("video_output_id")})
             return web.json_response(plan)
         except Exception:
             with LOCK:
