@@ -20,9 +20,9 @@ def effective(plan, row, directory=None, require=False):
     return {'refs': names, 'material_note': str(note).strip(), 'visual_type': kind}
 
 
-def packet(plan, row, directory):
+def packet(plan, row, directory, require=True):
     from .core import reference_directory, inside
-    value = effective(plan, row, directory, require=True)
+    value = effective(plan, row, directory, require=require)
     paths = [inside(reference_directory(directory), reference_directory(directory)/name) for name in value['refs']]
     return {**value, 'project_id': plan['id'], 'segment_index': row['index'],
             'mode': plan['mode'], 'brief': row['prompt'], 'duration': row['duration'],

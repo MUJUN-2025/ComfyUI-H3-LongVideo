@@ -461,6 +461,47 @@ function referenceSlotLimit() {
   return limit;
 }
 
+function graphLinkById(linkId) {
+  const graph = app.graph;
+  if (typeof graph?.getLink === "function") {
+    const link = graph.getLink(linkId);
+    if (link) return link;
+  }
+  return graph?.links?.[linkId] || (graph?._links?.get ? graph._links.get(linkId) : null);
+}
+
+function canvasReferenceDemand(loader) {
+  if (!loader) return {kind: "unknown", required: 0, driven: 0};
+  const driven = new Set();
+  const consumed = new Set();
+  for (const node of app.graph?._nodes || []) {
+    for (const input of node.inputs || []) {
+      if (input.link == null) continue;
+      const link = graphLinkById(input.link);
+      if (!link || String(link.origin_id) !== String(loader.id)) continue;
+      const origin = Number(link.origin_slot);
+      if (!Number.isInteger(origin) || origin < 5 || origin > 10) continue;
+      const isReferenceSlot = node.comfyClass === "MiniMaxH3ReferenceToVideo" &&
+        /^ref_images\.ref_image_\d+$/.test(String(input.name || ""));
+      (isReferenceSlot ? driven : consumed).add(origin-5);
+    }
+  }
+  if (driven.size) return {kind: "materials", required: 1, driven: driven.size};
+  if (!consumed.size) return {kind: "none", required: 0, driven: 0};
+  return {kind: "canvas", required: Math.max(...consumed)+1, driven: consumed.size};
+}
+
+function referenceDemandText(demand) {
+  if (demand.kind === "unknown") return "参考图：无法确定（画布上的长视频节点不唯一）";
+  if (demand.kind === "materials") {
+    return `参考图：由上传素材提供（参考节点使用前 ${demand.driven} 路图像输出）`;
+  }
+  if (demand.kind === "canvas") {
+    return `参考图：画布已接出 image_1–image_${demand.required}，每段至少需要 ${demand.required} 张`;
+  }
+  return "参考图：画布未接出图像输出，生成时不会使用参考图";
+}
+
 function referencePreviewUrl(projectId, name) {
   return api.apiURL(`/h3lv/project/${encodeURIComponent(projectId)}/refs/${encodeURIComponent(name)}`);
 }
@@ -837,8 +878,9 @@ async function openReview(owner) {
       const referenceList = element("div", undefined, referenceBlock, "h3lv-reference-list");
       rowRefs = Array.isArray(row.refs) ? [...row.refs] : [];
       if (!referenceLimit) {
-        element("p", "当前工作流还没有接出 ref_image 槽位：请先在画布上用“加载图像”节点依次接到 "
-          + "MiniMax H3 视频参考节点的 ref_image_0、ref_image_1……每接一个槽位，可用的参考图就多一张。",
+        element("p", "当前工作流没有接出 ref_image 槽位：顺序生成不会提交参考图，可以直接开始；"
+          + "需要参考图时，用“加载图像”节点依次接到 MiniMax H3 视频参考节点的 "
+          + "ref_image_0、ref_image_1……每接一个槽位，可用的参考图就多一张。",
           referenceBlock, "h3lv-reference-empty");
       }
       renderReferences = () => {
@@ -909,7 +951,7 @@ async function openReview(owner) {
           fileInput.click();
         }, "reference-add");
       addButton.disabled = !referenceLimit;
-      addButton.title = referenceLimit ? "" : "当前画布没有接出 ref_image 槽位";
+      addButton.title = referenceLimit ? "" : "当前画布没有接出 ref_image 槽位，本段上传的图不会提交给 H3";
       actionButton(referenceHeader, "套用到所有分段", async () => {
         if (!await confirmDialog({
           title: "把本段的参考图套用到所有分段？",
@@ -1077,11 +1119,12 @@ async function openReview(owner) {
     const failedIndex = plan.segments.findIndex(row => row.job?.status === "failed");
     runButton.textContent = failedIndex >= 0 ? `▶ 重试第 ${failedIndex+1} 段并继续` :
       (["paused", "stopped"].includes(plan.run_status) ? "▶ 继续顺序生成" : "▶ 开始顺序生成");
-    notice.textContent = analysis.available === false ? analysis.reason :
+    notice.textContent = (analysis.available === false ? analysis.reason :
       `诊断：${analysis.phrases?.length || 0} 个识别句段 · ${analysis.sections?.length || 0} 个疑似无人声区 · `+
       `${analysis.rhythm?.tempo_bpm ? `约 ${analysis.rhythm.tempo_bpm} BPM（仅次级参考）` : "未取得稳定节拍参考"}`+
       ` · 运镜：${plan.mode === "speaking" ? "口播固定机位规则" : "唱歌动态规则"}`+
-      `${analysis.legacy_notice ? ` · ${analysis.legacy_notice}` : ""}`;
+      `${analysis.legacy_notice ? ` · ${analysis.legacy_notice}` : ""}`) +
+      ` · ${referenceDemandText(canvasReferenceDemand(owner))}`;
     renderCards();
     updateSelected(selected);
     if (details[selected]) details[selected].open = true;

@@ -1453,15 +1453,42 @@ class ReferenceImageTests(unittest.TestCase):
             self.assertNotIn("218", prompt)
             self.assertTrue((inputs/"H3LV"/plan["id"]/"a.png").is_file())
 
-    def test_segment_references_never_exceed_the_connected_slots(self):
+    def test_segment_references_are_trimmed_to_the_connected_slots(self):
         with tempfile.TemporaryDirectory() as d:
             plan, root = self.reference_project(d, ("a.png", "b.png", "c.png"))
             plan["segments"][1]["refs"] = ["a.png", "b.png", "c.png"]
             prompt = {"136": {"class_type": "MiniMaxH3ReferenceToVideo", "inputs": {
                 "ref_images.ref_image_0": ["137", 0]}},
                 "137": {"class_type": "LoadImage", "inputs": {"image": "person.png"}}}
-            with self.assertRaisesRegex(ValueError, "只接出了 1 个"):
+            inputs = Path(d)/"input"; inputs.mkdir()
+            with patch.dict(sys.modules, {"folder_paths": types.SimpleNamespace(
+                    get_input_directory=lambda: str(inputs))}):
                 controller.apply_segment_references(prompt, plan, plan["segments"][1], root)
+            self.assertEqual(prompt["136"]["inputs"], {"ref_images.ref_image_0": ["137", 0]})
+            self.assertEqual(prompt["137"]["inputs"]["image"], f"H3LV/{plan['id']}/a.png")
+
+    def test_reference_slots_without_the_plugin_loaders_are_left_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan, root = self.reference_project(d, ("a.png", "b.png"))
+            plan["segments"][0]["refs"] = ["a.png"]
+            prompt = {"136": {"class_type": "MiniMaxH3ReferenceToVideo", "inputs": {
+                "ref_images.ref_image_0": ["99", 0]}},
+                "99": {"class_type": "ImageResizeKJv2", "inputs": {"image": ["98", 0]}},
+                "98": {"class_type": "LoadImage", "inputs": {"image": "mine.png"}}}
+            before = copy.deepcopy(prompt)
+            with patch.dict(sys.modules, {"folder_paths": types.SimpleNamespace(
+                    get_input_directory=lambda: str(Path(d)/"input"))}):
+                controller.apply_segment_references(prompt, plan, plan["segments"][0], root)
+            self.assertEqual(prompt, before)
+
+    def test_segment_without_slots_keeps_the_canvas_wiring(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan, root = self.reference_project(d, ("a.png",))
+            plan["segments"][0]["refs"] = ["a.png"]
+            prompt = {"266": {"class_type": "H3LVUnified", "inputs": {}},
+                      "136": {"class_type": "MiniMaxH3ReferenceToVideo", "inputs": {"prompt": "keep"}}}
+            controller.apply_segment_references(prompt, plan, plan["segments"][0], root)
+            self.assertEqual(prompt["136"]["inputs"], {"prompt": "keep"})
 
     def test_segment_without_references_leaves_the_graph_untouched(self):
         with tempfile.TemporaryDirectory() as d:

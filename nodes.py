@@ -413,7 +413,9 @@ class LoadSegment:
             audio = np.pad(audio, ((0, max(0, target-len(audio))), (0, 0)))
             outputs.append({"waveform": torch.from_numpy(audio.T.copy()).unsqueeze(0), "sample_rate": sr})
         from .materials import packet, images
-        material = packet(plan, row, directory) if plan.get('materials_version') else {}
+        # 没有上传参考图时不再中止：没有下游读取这些图像输出时，空槽位不会被执行。
+        material = packet(plan, row, directory, require=False) \
+            if plan.get('materials_version') else {}
         pictures = images(material) if material else (None,)*6
         return (*outputs, row["generation_frames"],
                 f"H3LongVideo/projects/{project_id}/takes/seg_{segment_index:04d}", material,
