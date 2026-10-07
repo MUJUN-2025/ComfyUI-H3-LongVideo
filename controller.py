@@ -14,6 +14,7 @@ import uuid
 from .core import (LOCK, REFERENCE_MIRROR_ROOT, archive_take, audio_file, fingerprint, inside,
                    output_preview, project_path, read_plan, reference_directory,
                    request_regeneration, segment_fingerprint, write_plan)
+from .diagnostics import logged, record_error, record_history_error
 
 TASKS = {}
 SEGMENT_NODE_TYPES = {"H3LVUnified"}
@@ -351,16 +352,18 @@ def validate_generation_materials(plan, directory, indices=None):
 async def execute_project(root, project_id, server):
     import execution
     import folder_paths
-    directory = project_path(root, project_id)
-    snapshot_file = directory/"state"/"queue_snapshot.json"
-    snapshot = normalize_output_contract(json.loads(snapshot_file.read_text(encoding="utf-8")))
-    snapshot_file.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    stage, index, prompt_id = "workflow_snapshot", None, None
     try:
+        directory = project_path(root, project_id)
+        snapshot_file = directory/"state"/"queue_snapshot.json"
+        snapshot = normalize_output_contract(json.loads(snapshot_file.read_text(encoding="utf-8")))
+        snapshot_file.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
         initial_plan = read_plan(root, project_id)
         only_segment = initial_plan.get("run_only_segment")
         indices = ([int(only_segment)] if only_segment is not None
                    else range(len(initial_plan["segments"])))
         for index in indices:
+            stage, prompt_id = "segment_prepare", None
             plan = read_plan(root, project_id)
             halted = halt_status(plan)
             if halted:
@@ -387,6 +390,7 @@ async def execute_project(root, project_id, server):
                 prompt[snapshot["loader_id"]]["inputs"].update(project_id=project_id, segment_index=index)
                 apply_segment_references(prompt, plan, row, directory)
                 bind_video_output(prompt, snapshot["loader_id"], snapshot["video_id"])
+                stage = "workflow_validation"
                 valid = await execution.validate_prompt(prompt_id, prompt, [snapshot["video_id"]])
                 if not valid[0]:
                     raise ValueError("视频工作流校验失败："+str(valid[1]))
@@ -404,8 +408,10 @@ async def execute_project(root, project_id, server):
                     extra["client_id"] = client_id
                 number = server.number
                 server.number += 1
+                stage = "queue_submit"
                 server.prompt_queue.put((number, prompt_id, prompt, extra, valid[2], {}))
             prompt_id = job["prompt_id"]
+            stage = "segment_generation"
             while True:
                 history = server.prompt_queue.get_history(prompt_id=prompt_id).get(prompt_id)
                 if history:
@@ -419,6 +425,7 @@ async def execute_project(root, project_id, server):
             plan = read_plan(root, project_id)
             row = plan["segments"][index]
             try:
+                record_history_error(history, project_id=project_id, segment_index=index, prompt_id=prompt_id)
                 video = video_from_history(history, snapshot["video_id"], directory, folder_paths.get_output_directory())
                 row["job"].update(status="completed", video=video,
                                   input_fingerprint=segment_fingerprint(row))
@@ -453,6 +460,7 @@ async def execute_project(root, project_id, server):
         if halted:
             plan["run_status"] = halted
         else:
+            stage, index, prompt_id = "video_assembly", None, None
             plan["run_status"] = "merging"
             write_plan(root, plan)
             final = await asyncio.to_thread(assemble, root, project_id)
@@ -469,6 +477,7 @@ async def execute_project(root, project_id, server):
             server.send_sync("h3lv-final", {"project_id": project_id, "preview": preview,
                                            "video_id": snapshot["video_id"]})
     except Exception as exc:
+        record_error(stage, exc, project_id=project_id, segment_index=index, prompt_id=prompt_id)
         plan = read_plan(root, project_id)
         plan.pop("run_only_segment", None)
         plan.update(run_status="failed", error=str(exc))
@@ -477,6 +486,7 @@ async def execute_project(root, project_id, server):
         TASKS.pop(project_id, None)
 
 
+@logged("generation_start")
 def start(root, project_id, payload, server):
     with LOCK:
         if project_id in TASKS:
@@ -643,6 +653,7 @@ def probe_video(path):
     return data["streams"][0]
 
 
+@logged("video_assembly")
 def assemble(root, project_id):
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:

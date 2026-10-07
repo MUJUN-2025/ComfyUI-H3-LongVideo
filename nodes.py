@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 import uuid
 
 from . import director_rules
+from .diagnostics import logged
 from .core import (audio_file, audit_asr_transcript, decorate, fingerprint, project_path,
                    read_plan, segmentation, validate_segment_brief, write_plan)
 
@@ -243,6 +244,7 @@ def separate(audio, sr):
             torch.cuda.empty_cache()
 
 
+@logged("speech_recognition")
 def run_asr(project):
     import importlib.util
     import comfy.model_management as mm
@@ -303,6 +305,7 @@ class Analyze:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
+    @logged("audio_analysis")
     def analyze(self, audio, mode, max_seconds, target_seconds, asr_python, asr_model,
                 asr_device="auto", director_mode="本地规则", vocals=None):
         import soundfile as sf
@@ -385,6 +388,7 @@ class LoadSegment:
         except (ValueError, FileNotFoundError):
             return float("nan")
 
+    @logged("segment_load")
     def load(self, project_id, segment_index):
         import numpy as np
         import soundfile as sf
@@ -443,6 +447,7 @@ class Unified:
                 pass
         return float("nan")
 
+    @logged("long_video_node")
     def process(self, audio, mode, max_seconds, target_seconds, asr_python, asr_model,
                 asr_device="auto", director_mode="本地规则", project_id="", segment_index=0,
                 vocals=None):

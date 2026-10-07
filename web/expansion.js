@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { reportUiError, withUiLogging } from "./diagnostics.js";
 
 async function request(path, body) {
   const response = await api.fetchApi(path, body === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
@@ -24,7 +25,9 @@ function dialog(title) {
 function button(parent, text, status, action) {
   const b = element("button", parent, text); b.className = "h3lv-button";
   b.onclick = async () => {b.disabled = true; status.textContent = "处理中…";
-    try {await action();} catch(error) {status.textContent = error.message;}
+    try {await action();} catch(error) {
+      void reportUiError(error, {source:"expansion", action:text});
+      status.textContent = error.message;}
     finally {b.disabled = false;}};
   return b;
 }
@@ -132,8 +135,10 @@ app.registerExtension({name:"H3LV.PromptExpansion", async beforeRegisterNodeDef(
       ruleWidget.options = {...ruleWidget.options,
         tooltip:"这不是本段最终提示词；它会与内置 H3 规则、导演简报、画面类型、声音关系和参考图一起发给模型，指导模型如何组织结果。"};
     }
-    this.addWidget("button", "API 设置与模型选择", null, () => settingsDialog(this).catch(error => window.alert(error.message))).serialize = false;
-    this.addWidget("button", "分段扩写预览 / 编辑", null, () => previewDialog(this).catch(error => window.alert(error.message))).serialize = false;
+    this.addWidget("button", "API 设置与模型选择", null, () => withUiLogging(() => settingsDialog(this),
+      {source:"expansion", action:"API 设置", node_id:this.id})().catch(error => window.alert(error.message))).serialize = false;
+    this.addWidget("button", "分段扩写预览 / 编辑", null, () => withUiLogging(() => previewDialog(this),
+      {source:"expansion", action:"扩写预览", node_id:this.id})().catch(error => window.alert(error.message))).serialize = false;
     this.size[0] = Math.max(this.size[0], 380);
     return result;
   };

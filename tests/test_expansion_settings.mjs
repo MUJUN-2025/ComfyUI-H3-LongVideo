@@ -18,7 +18,8 @@ test("API settings UI preserves legacy profiles and sends new options without se
   }};
   const source = fs.readFileSync(new URL("../web/expansion.js", import.meta.url), "utf8")
     .replace(/^import .*;\r?\n/gm, "");
-  vm.runInNewContext(source, {app, api, document, window: {alert() {}}});
+  vm.runInNewContext(source, {app, api, document, window: {alert() {}}, reportUiError: async () => true,
+    withUiLogging: action => action});
   function Node() {}
   await extension.beforeRegisterNodeDef(Node, {name: "H3LVPromptExpand"});
   const widgets = [];

@@ -3,6 +3,7 @@ import { api } from "../../scripts/api.js";
 import { materialEditor } from "./materials.js";
 import { createTimeline, pcmWavePeaks } from "./timeline.js";
 import { generationOutputs } from "./video_outputs.js";
+import { downloadErrorLog, reportUiError, withUiLogging } from "./diagnostics.js";
 
 if (!document.querySelector("link[data-h3lv-style]")) {
   const link = document.createElement("link");
@@ -35,6 +36,7 @@ function actionButton(parent, label, action, className = "") {
   node.onclick = async () => {
     node.disabled = true;
     try { await action(); } catch (error) {
+      void reportUiError(error, {source: "h3lv", action: label});
       await messageDialog({title: "操作失败", message: error.message || String(error), tone: "error"});
     }
     finally { node.disabled = false; }
@@ -1233,6 +1235,8 @@ app.registerExtension({
       const unified = nodes.filter(node => node.comfyClass === "H3LVUnified");
       if (unified.length === 1) {
         const node = unified[0];
+        const runAction = action => withUiLogging(action, {source: "h3lv", action: "运行工作流",
+          node_id: node.id, project_id: node.properties?.h3lv_project || ""})();
         const requestedTargets = Array.isArray(options) ? options :
           (options?.queueNodeIds ?? options?.partialExecutionTargets);
         const partialTargets = Array.isArray(requestedTargets)
@@ -1242,7 +1246,7 @@ app.registerExtension({
           const nodeSelected = Boolean(selectedItems?.has?.(node) ||
             app.canvas?.selected_nodes?.[node.id] === node || node.selected);
           if (partialTargets.includes(String(node.id)) || nodeSelected) {
-            await analyzeOnly(node);
+            await runAction(() => analyzeOnly(node));
             return;
           }
           return originalQueuePrompt.apply(this, arguments);
@@ -1252,9 +1256,9 @@ app.registerExtension({
           try {
             const plan = await request(`/h3lv/project/${previousProject}`);
             if (plan.approved) {
-              await startApprovedSequence(node, plan);
+              await runAction(() => startApprovedSequence(node, plan));
             } else {
-              await openReview(node);
+              await runAction(() => openReview(node));
             }
             return;
           } catch (error) {
@@ -1264,7 +1268,7 @@ app.registerExtension({
             if (projectWidget) projectWidget.value = "";
           }
         }
-        await analyzeOnly(node);
+        await runAction(() => analyzeOnly(node));
         return;
       }
       return originalQueuePrompt.apply(this, arguments);
@@ -1323,6 +1327,9 @@ app.registerExtension({
         () => openReview(this).catch(error => messageDialog({
           title: "无法打开分段审核", message: error.message, tone: "error"})));
       widget.serialize = false;
+      this.addWidget("button", "下载错误日志", null,
+        () => downloadErrorLog().catch(error => messageDialog({
+          title: "无法下载错误日志", message: error.message, tone: "error"}))).serialize = false;
       setTimeout(() => resizeNodeToVisibleWidgets(this), 0);
       return result;
     };

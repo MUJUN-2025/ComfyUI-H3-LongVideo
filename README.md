@@ -143,6 +143,23 @@ API 失败会区分超时、DNS／连接／TLS、HTTP 状态、服务端错误�
 
 自行搭建工作流时，将 `segment_material` 接入插件的“H3 长视频 · 分镜提示词生成器”，再把生成结果接入 H3 提示词输入。若使用外部工具写提示词，可在分段界面填写“手写提示词”，将长视频节点末尾的 `segment_prompt` 直接接入 H3 `prompt`；该接口不会改写、校验或回退。H3 的 `prompt` 同时只能选择一条连线。顺序生成工作流保留一个 `H3LVUnified` 节点，输出可选 VHS Video Combine 或原生 `CreateVideo → SaveVideo`。也可在画布上将 `filename_prefix` 接到保存节点、`fps` 接到 VHS 的 `frame_rate` 或原生创建视频的 `fps`，明确显示分段保存连接。
 
+## 报错日志
+
+出错后可点击 **H3 长视频节点上的“下载错误日志”**，把下载的 `H3LongVideo-errors.log` 发给维护者。更新插件后需重启 ComfyUI 并刷新浏览器，按钮才会出现。
+
+日志自动保存在：
+
+```text
+ComfyUI/output/H3LongVideo/logs/errors.log
+```
+
+- 覆盖音频分析、语音识别入口、提示词扩写、逐段提交／生成、视频合并、插件 HTTP 接口及主要前端操作错误；记录时间、阶段、异常堆栈，以及可获取的项目、分段、任务和失败节点信息。逐段生成会从 ComfyUI 任务历史提取原始节点错误，不再只能看到通用失败提示。
+- UTF-8 文本，每行一条 JSON 错误记录。单文件约 2 MiB，最多保留 `.1`、`.2` 两个轮转备份；下载按钮按时间顺序合并这三个文件。尚未发生错误时不会创建日志，下载会提示“尚未记录错误”。日志只覆盖更新后发生的错误，旧报错无法自动补全。
+- 不主动记录 API 请求正文、完整工作流、节点输入输出或图片／音频数据；对已配置 API Key、常见凭据、URL 和内联数据尽力脱敏，并截断过长异常。第三方异常文字可能包含路径或其他私密内容，**分享前仍请检查**。
+- 日志失败不改变原始错误、生成结果或重试策略；不会自动重试 API。它不是 ComfyUI 全局日志，不收集无关工作流错误，ComfyUI 启动／插件导入失败仍需查看启动控制台。
+
+语音识别子进程的详细输出仍在 `output/H3LongVideo/projects/<项目ID>/state/asr.log`。遇到 ASR 报错时，建议一并提供这个文件。`state/segments.json` 中的错误状态也继续保留。
+
 ## 使用建议
 
 - 当前面向单人口播和单人唱歌；建议先生成少量片段，确认素材与模型配置合适。
@@ -155,7 +172,7 @@ API 失败会区分超时、DNS／连接／TLS、HTTP 状态、服务端错误�
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py" -v
-node --test tests/test_timeline.mjs tests/test_material_mentions.mjs tests/test_expansion_settings.mjs
+node --test tests/test_timeline.mjs tests/test_material_mentions.mjs tests/test_expansion_settings.mjs tests/test_video_outputs.mjs tests/test_diagnostics.mjs
 ```
 
 测试范围及生成样本记录见 [验证记录](VERIFICATION.md)。

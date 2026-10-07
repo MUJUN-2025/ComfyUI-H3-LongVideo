@@ -8,6 +8,7 @@ import shutil
 
 from . import controller
 from . import director_rules
+from .diagnostics import download_log, record_error, record_event
 from .core import (LOCK, REFERENCE_MIRROR_ROOT, UNSET, archive_take, audio_file, edit_plan, fingerprint, inside, preview_bounds,
                    output_preview, project_path, read_plan, read_project_transcript,
                    preview_segment_brief, reference_directory, remove_reference,
@@ -110,13 +111,41 @@ def register_routes():
         async def wrapped(request):
             try:
                 return await fn(request)
-            except FileNotFoundError:
-                return web.json_response({"error": "项目文件不完整或已被移动，请重新运行音频分析。"}, status=400)
-            except (ValueError, KeyError, IndexError) as exc:
-                return web.json_response({"error": str(exc)}, status=400)
             except Exception as exc:
-                return web.json_response({"error": str(exc)}, status=500)
+                record_error("api_route", exc, source=fn.__name__,
+                             project_id=request.match_info.get("project_id"))
+                if isinstance(exc, FileNotFoundError):
+                    return web.json_response({"error": "项目文件不完整或已被移动，请重新运行音频分析。"}, status=400)
+                status = 400 if isinstance(exc, (ValueError, KeyError, IndexError)) else 500
+                return web.json_response({"error": str(exc)}, status=status)
         return wrapped
+
+    @routes.get('/h3lv/logs/errors')
+    @endpoint
+    async def error_log_download(request):
+        return web.Response(body=await asyncio.to_thread(download_log),
+                            content_type="text/plain", charset="utf-8",
+                            headers={"Content-Disposition": 'attachment; filename="H3LongVideo-errors.log"',
+                                     "Cache-Control": "no-store"})
+
+    @routes.post('/h3lv/logs/frontend')
+    @endpoint
+    async def frontend_error(request):
+        try:
+            raw = await request.content.readexactly(32769)
+        except asyncio.IncompleteReadError as exc:
+            raw = exc.partial
+        if len(raw) > 32768:
+            raise ValueError("错误日志上报内容过大。")
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or not isinstance(payload.get("message"), str):
+            raise ValueError("错误日志上报格式无效。")
+        context = {name: payload[name] for name in ("source", "action", "project_id", "node_id")
+                   if isinstance(payload.get(name), (str, int))}
+        recorded = record_event("frontend", payload["message"], "UIError",
+                                payload.get("stack") if isinstance(payload.get("stack"), str) else "",
+                                **context)
+        return web.json_response({"recorded": recorded})
 
     @routes.get('/h3lv/expansion/settings')
     @endpoint

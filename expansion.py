@@ -13,6 +13,7 @@ import time
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+from .diagnostics import logged
 
 HEADINGS = ('subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music')
 SHOT_LABEL_RE = re.compile(
@@ -304,6 +305,7 @@ def cache_source(material, key, mode):
     return 'manual' if mode == 'manual' else 'api'
 
 
+@logged("prompt_expansion")
 def expand(material, mode, model, rule, revision=0):
     if not material or not material.get('paths'):
         raise ValueError('请先在长视频审核面板启用内置素材并上传参考图。')
