@@ -170,6 +170,24 @@ class MaterialTests(unittest.TestCase):
         self.assertEqual(result[-2], 'user text exactly')
         self.assertEqual(result[-1], 24.0)
 
+    def test_segment_prompt_follows_the_project_default(self):
+        import numpy as np
+        root = self.directory/'projects'
+        self.plan['approved'] = True
+        self.plan['default_final_prompt'] = 'shared default prompt'
+        self.plan['segments'][0]['final_prompt_source'] = 'default'
+        self.plan['segments'][1]['final_prompt'] = 'segment text'
+        self.plan['segments'][1]['final_prompt_source'] = 'custom'
+        core.write_plan(root, self.plan)
+        fake = {'paths':[], 'brief':'test', 'material_note':''}
+        with patch.object(nodes,'data_root',return_value=root), \
+             patch('soundfile.read',return_value=(np.ones((1000,1),dtype=np.float32),100)), \
+             patch.object(materials,'packet',return_value=fake):
+            inherited = nodes.LoadSegment().load(self.plan['id'],0)
+            own = nodes.LoadSegment().load(self.plan['id'],1)
+        self.assertEqual(inherited[-2], 'shared default prompt')
+        self.assertEqual(own[-2], 'segment text')
+
     def test_vision_cache_and_context_invalidation(self):
         packet = materials.packet(self.plan,self.plan['segments'][0],self.directory)
         packet['material_note'] = '@图1是人物，@图2是环境'

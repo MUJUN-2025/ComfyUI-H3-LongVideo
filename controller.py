@@ -519,7 +519,7 @@ async def execute_project(root, project_id, server):
                 record_history_error(history, project_id=project_id, segment_index=index, prompt_id=prompt_id)
                 video = video_from_history(history, snapshot["video_id"], directory, folder_paths.get_output_directory())
                 row["job"].update(status="completed", video=video,
-                                  input_fingerprint=segment_fingerprint(row))
+                                  input_fingerprint=segment_fingerprint(plan, row))
                 final_prompt = final_prompt_from_history(history)
                 if final_prompt:
                     row["job"]["final_prompt"] = final_prompt

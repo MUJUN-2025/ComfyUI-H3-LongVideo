@@ -713,6 +713,7 @@ async function openReview(owner) {
   selectedAudio.preload = "metadata";
   const defaultMaterials = element("details", undefined, content, "h3lv-default-materials");
   let defaultEditor = null;
+  let defaultDirectPrompt = null;
   const segmentsBody = element("section", undefined, content, "h3lv-segments");
   let plan = null;
   let analysis = null;
@@ -1029,12 +1030,46 @@ async function openReview(owner) {
       element("summary", "手写提示词（segment_prompt 直连，可选）", directPrompt);
       element("p", "此处文字由长视频节点的 segment_prompt 原样输出。默认多图扩写接法不读取这里；只有手动把 segment_prompt 接到 H3 的 prompt 时才使用。",
         directPrompt, "h3lv-help");
+      const promptSourceRow = element("div", undefined, directPrompt, "h3lv-actions");
+      const promptSourceLabel = element("label", "手写提示词来源 ", promptSourceRow);
+      const promptSource = element("select", undefined, promptSourceLabel);
+      for (const [id, title] of [["default", "沿用项目默认"], ["custom", "本段自定义"]]) {
+        element("option", title, promptSource).value = id;
+      }
+      promptSource.value = row.final_prompt_source ||
+        (String(row.final_prompt || "").trim() ? "custom" : "default");
       const finalPrompt = element("textarea", undefined, directPrompt, "h3lv-direct-prompt-editor");
-      finalPrompt.value = row.final_prompt || "";
-      finalPrompt.placeholder = "粘贴或输入本段要直接发送给 H3 的提示词。插件不扩写、不校验、不回退。";
+      let ownFinalPrompt = row.final_prompt || "";
+      const copyPrompt = actionButton(promptSourceRow, "复制默认到本段", () => {
+        ownFinalPrompt = projectFinalPrompt();
+        promptSource.value = "custom";
+        renderFinalPrompt();
+        markDirty();
+      }, "prompt-copy");
+      function projectFinalPrompt() {
+        return String(defaultDirectPrompt?.get?.() ?? "");
+      }
+      function renderFinalPrompt() {
+        const linked = promptSource.value === "default";
+        const inherited = projectFinalPrompt();
+        finalPrompt.value = linked ? inherited : ownFinalPrompt;
+        finalPrompt.disabled = Boolean(linked);
+        finalPrompt.placeholder = linked
+          ? (inherited.trim() ? "" : "项目默认手写提示词为空，本段不会输出手写提示词。")
+          : "粘贴或输入本段要直接发送给 H3 的提示词。插件不扩写、不校验、不回退。";
+        copyPrompt.disabled = !linked || !inherited.trim();
+        copyPrompt.title = !linked ? "当前已经是本段自定义"
+          : (inherited.trim() ? "复制项目默认手写提示词到本段" : "项目默认手写提示词为空");
+      }
+      promptSource.onchange = () => { renderFinalPrompt(); markDirty(); };
       finalPrompt.spellcheck = false;
-      finalPrompt.oninput = markDirty;
-      rows.push({end, prompt, finalPrompt, note, materialControls, visualType:visualTypeSelect,
+      finalPrompt.oninput = () => {
+        if (promptSource.value === "custom") ownFinalPrompt = finalPrompt.value;
+        markDirty();
+      };
+      renderFinalPrompt();
+      rows.push({end, prompt, finalPrompt, promptSource, renderFinalPrompt,
+        getFinalPrompt: () => ownFinalPrompt, note, materialControls, visualType:visualTypeSelect,
         refs: rowRefs, renderRefs: renderReferences, duration, time,
         generationFrames, editFrames, audio:segmentAudio});
       details.push(card);
@@ -1109,6 +1144,23 @@ async function openReview(owner) {
         await load();
       });
     }
+    const defaultPromptBlock = element("section", undefined, defaultMaterials, "h3lv-default-direct-prompt");
+    element("h4", "项目默认手写提示词（可选）", defaultPromptBlock);
+    element("p", "填写一次，所有选择“沿用项目默认”的分段自动同步；只有把 segment_prompt 接到 H3 prompt 时才生效。"
+      + "修改后沿用默认的分段会标记为待重新生成。", defaultPromptBlock, "h3lv-help");
+    const defaultPromptEditor = element("textarea", undefined, defaultPromptBlock,
+      "h3lv-direct-prompt-editor");
+    defaultPromptEditor.value = plan.default_final_prompt || "";
+    defaultPromptEditor.placeholder = "粘贴或输入项目默认要直接发送给 H3 的提示词。插件不扩写、不校验、不回退。";
+    defaultPromptEditor.spellcheck = false;
+    defaultPromptEditor.oninput = () => {
+      markDirty();
+      rows.forEach(item => item.renderFinalPrompt?.());
+    };
+    defaultDirectPrompt = {
+      value: defaultPromptEditor,
+      get: () => defaultPromptEditor.value,
+    };
     analysis = await request(endpoint("/analysis"));
     if (widget) widget.value = plan.id;
     owner.properties = {...owner.properties, h3lv_project: plan.id};
@@ -1151,9 +1203,10 @@ async function openReview(owner) {
     if (dirty) {
       const saved = await request(endpoint("/edit"), {revision,
         reference_default_count: defaultSelect.value === "all" ? null : Number(defaultSelect.value),
+        default_final_prompt: defaultDirectPrompt?.get?.() ?? "",
         ...(plan.materials_version ? {materials:{refs:defaultEditor.refs, note:defaultEditor.getNote()}} : {}),
         segments: rows.map(row => ({end: Number(row.end.value), prompt: row.prompt.value,
-          final_prompt: row.finalPrompt.value,
+          final_prompt: row.getFinalPrompt(), final_prompt_source: row.promptSource.value,
           material_note: row.materialControls ? row.materialControls.getNote() : row.note.value, refs: row.refs,
           ...(row.materialControls ? {reference_source:row.materialControls.source.value,
             visual_type:row.visualType.value, brief_matches_visual_type:true} : {})}))});
